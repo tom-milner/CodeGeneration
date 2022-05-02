@@ -29,7 +29,7 @@ ParserInfo whileStatement();
 ParserInfo doStatement();
 ParserInfo subroutineCall();
 ParserInfo secondHalfSubroutineCall(char *token_name);
-ParserInfo expressionList(int *args_count);
+ParserInfo expressionList();
 ParserInfo returnStatement();
 ParserInfo expression();
 ParserInfo relationalExpression();
@@ -41,6 +41,9 @@ ParserInfo operand();
 // The possible checks to perform on an identifier.
 typedef enum { ID_NO_CHECK, ID_EXISTS, ID_NEW } IdentifierStatus;
 ParserInfo identifier(IdentifierStatus check);
+
+int if_count = 0;
+int while_count = 0;
 
 int InitParser(char *file_name) {
   int status = InitLexer(file_name);
@@ -159,6 +162,8 @@ ParserInfo lex_check(char lexeme[128], TokenType token_type,
 
 // classDeclar -> class identifier { {memberDeclar} }
 ParserInfo classDeclar() {
+  while_count = if_count = 0;
+
   // Starts with "class".
   ParserInfo p_info = lex_check("class", RESWORD, classExpected);
   p_err_check(p_info);
@@ -229,14 +234,11 @@ ParserInfo memberDeclar() {
 
 // These are the arguments for when a subroutine is called.
 // expressionList -> expression { , expression } | ε
-ParserInfo expressionList(int *args_count) {
+ParserInfo expressionList() {
   ParserInfo p_info;
   Token next_token = PeekNextToken();
   p_info.er = none;
   p_info.tk = next_token;
-
-  // The number of arguments in the subroutine call.
-  *args_count = 0;
 
   // An expression list is always followed by a ")". Therefore we can check for
   // "ε" by checking for a ")".
@@ -249,7 +251,6 @@ ParserInfo expressionList(int *args_count) {
     // We need an expression.
     p_info = expression();
     p_err_check(p_info);
-    (*args_count)++;
 
     // If the next token isn't a comma, we've processed all the expressions.
     next_token = PeekNextToken();
@@ -279,18 +280,13 @@ ParserInfo operand() {
     GetNextToken();  // Consume the token.
     // Write VM code.
     VM_write_push(SEGMENT_CONST, strtol(next_token.lx, NULL, 10));
-
     return p_info;
   }
 
   // stringLiteral
   if (next_token.tp == STRING) {
     GetNextToken();
-
-    // Create a new string using the JACK string class.
-
-    // We have to create a new JACK local variable.
-
+    VM_write_string_literal(next_token.lx);
     return p_info;
   }
   // true | false | null | this
@@ -303,8 +299,8 @@ ParserInfo operand() {
 
       // True is mapped to -1.
     } else if (s_cmp(next_token.lx, "true")) {
-      VM_write_push(SEGMENT_CONST, 1);
-      VM_write("neg");
+      VM_write_push(SEGMENT_CONST, 0);
+      VM_write("not");
 
       // This is pointer 0.
     } else if (s_cmp(next_token.lx, "this")) {
@@ -371,16 +367,24 @@ ParserInfo operand() {
     // Generate the VM code.
     if (GetPassMode() == SECOND) {
       Symbol *array_sym = LookupSymbol(array_name);
-      VM_get_array_item(array_sym);
+      VM_array_item(array_sym);
+      VM_write_pop(SEGMENT_POINTER, 1);
+      VM_write_push(SEGMENT_THAT, 0);
     }
 
     p_info.tk = next_token;
   }
 
-  // We are accessing a subroutine.
+  // Else if we are accessing a subroutine.
   // [ .identifier ] ( expressionList )
   else if (s_cmp(next_token.lx, ".") || s_cmp(next_token.lx, "(")) {
     p_info = secondHalfSubroutineCall(p_info.tk.lx);
+  } else {
+    // Just push the identifier to the stack.
+    if (GetPassMode() == SECOND) {
+      Symbol *sym = LookupSymbol(p_info.tk.lx);
+      VM_write_push(sym_to_seg(sym->kind), sym->num);
+    }
   }
   return p_info;
 }
@@ -399,7 +403,12 @@ ParserInfo factor() {
   p_info = operand();
   p_err_check(p_info);
 
-  p_info.er = none;
+  if (s_cmp(next_token.lx, "-")) {
+    VM_write("neg");
+  } else if (s_cmp(next_token.lx, "~")) {
+    VM_write("not");
+  }
+
   return p_info;
 }
 
@@ -420,6 +429,15 @@ ParserInfo term() {
       // Must be followed by a factor.
       p_info = factor();
       p_err_check(p_info);
+
+      Symbol *math = LookupSymbol("Math");
+      Symbol *function;
+      if (s_cmp(next_token.lx, "*")) {
+        function = LookupSubroutine("multiply", math->identifier);
+      } else {
+        function = LookupSubroutine("divide", math->identifier);
+      }
+      VM_call_function(math, function, 2);
 
     } else {
       break;
@@ -443,6 +461,13 @@ ParserInfo arithmeticExpression() {
 
       p_info = term();
       p_err_check(p_info);
+
+      if (s_cmp(next_token.lx, "+")) {
+        VM_write("add");
+      } else {
+        VM_write("sub");
+      }
+
     } else {
       break;
     }
@@ -468,6 +493,15 @@ ParserInfo relationalExpression() {
       // Must be followed by another ArithmeticExpression.
       p_info = arithmeticExpression();
       p_err_check(p_info);
+
+      if (s_cmp(next_token.lx, "=")) {
+        VM_write("eq");
+      } else if (s_cmp(next_token.lx, "<")) {
+        VM_write("lt");
+      } else {
+        VM_write("gt");
+      }
+
     } else {
       break;
     }
@@ -489,6 +523,8 @@ ParserInfo expression() {
       GetNextToken();
       p_info = relationalExpression();
       p_err_check(p_info);
+
+      VM_write(s_cmp(next_token.lx, "&") ? "and" : "or");
     } else {
       break;
     }
@@ -551,12 +587,17 @@ ParserInfo secondHalfSubroutineCall(char *token_name) {
 
     // If we are accessing an external subroutine, make sure we are
     // accessing it from a valid context.
-    if (is_external) {
-      bool is_class = s_cmp(subroutine_parent_name, parent_symbol->type);
-      bool invalid_context = is_class && subr_symbol->kind == METHOD;
-      if (invalid_context) {
-        p_info.er = undecIdentifier;
-        return p_info;
+    bool is_class = s_cmp(subroutine_parent_name, parent_symbol->type);
+    if (is_external && is_class && subr_symbol->kind == METHOD) {
+      p_info.er = undecIdentifier;
+      return p_info;
+    }
+    if (subr_symbol->kind == METHOD) {
+      // Push the instance onto the stack.
+      if (is_class) {
+        VM_write_push(SEGMENT_POINTER, 0);
+      } else {
+        VM_write_push(sym_to_seg(parent_symbol->kind), parent_symbol->num);
       }
     }
   }
@@ -566,12 +607,14 @@ ParserInfo secondHalfSubroutineCall(char *token_name) {
   p_err_check(p_info);
 
   // expressionList.
-  int arg_count = 0;
-  p_info = expressionList(&arg_count);
+  p_info = expressionList();
   p_err_check(p_info);
 
   // Now we can generate the VM code!
-  VM_call_function(parent_symbol, subr_symbol, arg_count);
+  if (GetPassMode() == SECOND) {
+    VM_call_function(parent_symbol, subr_symbol, subr_symbol->num_args);
+    if (subr_symbol->is_void) VM_write_pop(SEGMENT_TEMP, 0);
+  }
 
   // Closing ")".
   p_info = lex_check(")", SYMBOL, closeParenExpected);
@@ -589,6 +632,11 @@ ParserInfo returnStatement() {
   if (next_token.tp == SYMBOL && s_cmp(next_token.lx, ";")) {
     GetNextToken();
     p_info.tk = next_token;
+
+    if (GetPassMode() == SECOND) {
+      VM_write_push(SEGMENT_CONST, 0);
+      VM_write("return");
+    }
     return p_info;
     // SYNTAX_OK
   }
@@ -603,6 +651,8 @@ ParserInfo returnStatement() {
   // There must be an expression.
   p_info = expression();
   p_err_check(p_info);
+
+  if (GetPassMode() == SECOND) VM_write("return");
 
   // Semicolon.
   p_info = lex_check(";", SYMBOL, semicolonExpected);
@@ -638,6 +688,13 @@ ParserInfo whileStatement() {
   p_info = lex_check("(", SYMBOL, openParenExpected);
   p_err_check(p_info);
 
+  int serial_no = while_count;
+  if (GetPassMode() == SECOND) while_count++;
+
+  char vm_command[128];
+  sprintf(vm_command, "label WHILE_EXP%d", serial_no);
+  VM_write(vm_command);
+
   // Expression.
   p_info = expression();
   p_err_check(p_info);
@@ -645,6 +702,10 @@ ParserInfo whileStatement() {
   // Closing ")".
   p_info = lex_check(")", SYMBOL, closeParenExpected);
   p_err_check(p_info);
+
+  VM_write("not");
+  sprintf(vm_command, "if-goto WHILE_END%d", serial_no);
+  VM_write(vm_command);
 
   // Opening "{".
   p_info = lex_check("{", SYMBOL, openBraceExpected);
@@ -665,6 +726,11 @@ ParserInfo whileStatement() {
     p_info = statement();
     p_err_check(p_info);
   }
+
+  sprintf(vm_command, "goto WHILE_EXP%d", serial_no);
+  VM_write(vm_command);
+  sprintf(vm_command, "label WHILE_END%d", serial_no);
+  VM_write(vm_command);
 
   return p_info;
 }
@@ -692,6 +758,12 @@ ParserInfo ifStatement() {
   p_info = lex_check("{", SYMBOL, openBraceExpected);
   p_err_check(p_info);
 
+  int serial_no;
+  if (GetPassMode() == SECOND) {
+    serial_no = if_count++;
+    VM_start_if(serial_no);
+  }
+
   // 0 or many statements.
   Token next_token;
   while (1) {
@@ -718,6 +790,8 @@ ParserInfo ifStatement() {
     p_info = lex_check("{", SYMBOL, openBraceExpected);
     p_err_check(p_info);
 
+    VM_start_else(serial_no);
+
     // 0 or many statements.
     while (1) {
       // Keep reading statements until we reach a "}".
@@ -733,6 +807,8 @@ ParserInfo ifStatement() {
       p_err_check(p_info);
     }
   }
+
+  if (GetPassMode() == SECOND) VM_stop_if(serial_no);
 
   p_info.er = none;
   return p_info;
@@ -752,10 +828,14 @@ ParserInfo letStatement() {
   p_info = identifier(GetPassMode() == FIRST ? ID_NO_CHECK : ID_EXISTS);
   p_err_check(p_info);
 
+  bool is_array = false;
+  Symbol *dest_symbol = LookupSymbol(p_info.tk.lx);
+
   // If the variable is an array, we can access it's elements using "[x]".
   // The next token should either be a "[" or a "=".
   next_token = PeekNextToken();
   if (next_token.tp == SYMBOL && s_cmp("[", next_token.lx)) {
+    is_array = true;
     GetNextToken();
     // expression.
     p_info = expression();
@@ -764,6 +844,9 @@ ParserInfo letStatement() {
     // Closing "]".
     p_info = lex_check("]", SYMBOL, closeBracketExpected);
     p_err_check(p_info);
+
+    // Store the array access in "that".
+    if (GetPassMode() == SECOND) VM_array_item(dest_symbol);
   }
   // "="
   p_info = lex_check("=", SYMBOL, equalExpected);
@@ -772,6 +855,17 @@ ParserInfo letStatement() {
   // expression.
   p_info = expression();
   p_err_check(p_info);
+
+  if (GetPassMode() == SECOND) {
+    if (is_array) {
+      VM_write_pop(SEGMENT_TEMP, 0);
+      VM_write_pop(SEGMENT_POINTER, 1);
+      VM_write_push(SEGMENT_TEMP, 0);
+      VM_write_pop(SEGMENT_THAT, 0);
+    } else {
+      VM_write_pop(sym_to_seg(dest_symbol->kind), dest_symbol->num);
+    }
+  }
 
   // Semicolon.
   p_info = lex_check(";", SYMBOL, semicolonExpected);
@@ -798,7 +892,7 @@ ParserInfo varDeclarStatement() {
   p_err_check(p_info);
   strcpy(new_symbol.identifier, p_info.tk.lx);  // Store the symbol identifier.
 
-  if (GetPassMode() == SECOND) AppendSymbol(new_symbol);
+  AppendSymbol(new_symbol);
 
   // List of identifiers.
   // TODO: This is duplicated in classVarDecl. Move to separate function?
@@ -819,7 +913,7 @@ ParserInfo varDeclarStatement() {
     strcpy(new_symbol.identifier,
            p_info.tk.lx);  // Store the symbol identifier.
 
-    if (GetPassMode() == SECOND) AppendSymbol(new_symbol);
+    AppendSymbol(new_symbol);
   }
 
   // Now we need to check for the final ";".
@@ -933,7 +1027,7 @@ ParserInfo paramList() {
   p_err_check(p_info);
   strcpy(new_symbol.identifier, p_info.tk.lx);  // Store the symbol identifier.
 
-  if (GetPassMode() == SECOND) AppendSymbol(new_symbol);
+  AppendSymbol(new_symbol);
 
   while (1) {
     // Comma.
@@ -957,7 +1051,7 @@ ParserInfo paramList() {
     strcpy(new_symbol.identifier,
            p_info.tk.lx);  // Store the symbol identifier.
 
-    if (GetPassMode() == SECOND) AppendSymbol(new_symbol);
+    AppendSymbol(new_symbol);
   }
   return p_info;
 }
@@ -969,7 +1063,11 @@ ParserInfo subroutineDeclar() {
   // Must start with either "constructor", "function" or "method".
   Token next_token = GetNextToken();
   Symbol new_subroutine;
-  if (s_cmp(next_token.lx, "constructor") || s_cmp(next_token.lx, "function")) {
+  bool is_constructor = false;
+  if (s_cmp(next_token.lx, "constructor")) {
+    new_subroutine.kind = FUNCTION;
+    is_constructor = true;
+  } else if (s_cmp(next_token.lx, "function")) {
     new_subroutine.kind = FUNCTION;
   } else if (s_cmp(next_token.lx, "method")) {
     new_subroutine.kind = METHOD;
@@ -985,7 +1083,9 @@ ParserInfo subroutineDeclar() {
     // Not "void" so needs to be a type.
     p_info = type();
     p_err_check(p_info);
+    new_subroutine.is_void = false;
   } else {
+    new_subroutine.is_void = true;
     GetNextToken();
   }
   strcpy(new_subroutine.type, next_token.lx);
@@ -1003,11 +1103,20 @@ ParserInfo subroutineDeclar() {
   }
 
   // Reset the symbol table for the new subroutine scope.
-  StartNewSubroutine(curr_sub->identifier);
+  StartNewSubroutine(curr_sub);
   curr_context = CTX_SUBROUTINE;
 
   // Generate the VM code.
-  VM_start_function(curr_sub);
+  if (GetPassMode() == SECOND) VM_start_function(curr_sub);
+
+  if (is_constructor && GetPassMode() == SECOND) {
+    Symbol *class = LookupSymbol(curr_sub->parent);
+    VM_write_push(SEGMENT_CONST, class->num_fields);
+    Symbol *mem_class = LookupSymbol("Memory");
+    Symbol *alloc = LookupSubroutine("alloc", "Memory");
+    VM_call_function(mem_class, alloc, 1);
+    VM_write_pop(SEGMENT_POINTER, 0);
+  }
 
   // Open bracket.
   p_info = lex_check("(", SYMBOL, openParenExpected);

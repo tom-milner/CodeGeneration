@@ -1,6 +1,8 @@
 #ifndef SYMBOLS_H
 #define SYMBOLS_H
 
+#include <stdbool.h>
+
 #include "lexer.h"
 #include "parser.h"
 
@@ -39,7 +41,12 @@ typedef struct Symbol {
   char parent[128];
 
   int num_locals;  // Only used by FUNCTION and METHOD.
+  int num_args;
+  bool is_void;
+
   int num_fields;  // Only used by CLASS.
+
+
 
 } Symbol;
 
@@ -53,7 +60,7 @@ typedef struct {
 // Setup the symbol table.
 int InitSymbolTable();
 
-void StartNewSubroutine(char *name);
+void StartNewSubroutine(Symbol *subr);
 
 void StartNewClass(char *name);
 

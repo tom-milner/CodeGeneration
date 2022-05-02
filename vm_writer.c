@@ -56,45 +56,33 @@ void VM_write(char *command) {
 
 void VM_call_function(Symbol *parent, Symbol *subroutine, int num_args) {
   if (!is_init) return;
-  /*
-   * Possible combinations:
-   * 1. CLASS, METHOD: Calling a local method.
-   * 2. FIELD/VAR/LOCAL/STATIC, METHOD: Calling an instance function.
-   * 3. *, FUNCTION: Calling a static function.
-   */
 
-  // If the subroutine is a method, we'll need to provide a reference to the
-  // object to use as "this".
-  if (subroutine->kind == METHOD) {
-    num_args++;
-    if (parent->kind == CLASS) {
-      // Set to "this".
-      VM_write_push(SEGMENT_POINTER, 0);
-    } else {
-      VM_write_push(sym_to_seg(parent->kind), parent->num);
-    }
-  }
   fprintf(output_file, "call %s.%s %d\n", parent->type, subroutine->identifier,
           num_args);
 }
 
-void VM_get_array_item(Symbol *array) {
+void VM_array_item(Symbol *array) {
   if (!is_init) return;
+
+  // The result of the index expression is already in the stack! (k)
 
   // We need to turn something like bar[k] into *(bar+k).
   VM_write_push(sym_to_seg(array->kind), array->num);
   VM_write("add");
-
-  // Access the element using the "that' pointer.
-  VM_write_pop(SEGMENT_POINTER, 1);
-  // Push the element to the stack.
-  VM_write_push(SEGMENT_THAT, 0);
 }
 
 void VM_start_function(Symbol *function) {
   if (!is_init) return;
+  //  printf("function %s.%s %d\n", function->parent,
+  //          function->identifier, function->num_locals);
   fprintf(output_file, "function %s.%s %d\n", function->parent,
           function->identifier, function->num_locals);
+
+  if (function->kind == METHOD) {
+    // If the subroutine is a method, we need to get the this pointer.
+    VM_write_push(SEGMENT_ARG, 0);
+    VM_write_pop(SEGMENT_POINTER, 0);
+  }
 }
 
 int VM_stop() {
@@ -111,4 +99,40 @@ VM_Data_Segment sym_to_seg(SymbolKind symbol_kind) {
     case FIELD: return SEGMENT_THIS;
     default: printf("Invalid symbol to turn into segment."); return -1;
   }
+}
+void VM_write_string_literal(char *literal) {
+  // String literals are handled as string objects.
+
+  // The string length is required as an argument.
+  int length = strlen(literal);
+  VM_write_push(SEGMENT_CONST, length);
+
+  // Create the string object.
+  Symbol *class = LookupSymbol("String");
+  Symbol *new = LookupSubroutine("new", class->identifier);
+  VM_call_function(class, new, 1);
+
+  // Add the characters of the string.
+  Symbol *append = LookupSubroutine("appendChar", class->identifier);
+  for (int i = 0; i < length; i++) {
+    VM_write_push(SEGMENT_CONST, literal[i]);
+    VM_call_function(class, append, 2);
+  }
+}
+
+void VM_start_if(int serial_no) {
+  if (!is_init) return;
+  fprintf(output_file, "if-goto IF_TRUE%d\n", serial_no);
+  fprintf(output_file, "goto IF_FALSE%d\n", serial_no);
+  fprintf(output_file, "label IF_TRUE%d\n", serial_no);
+}
+
+void VM_start_else(int serial_no){
+  if (!is_init) return;
+  fprintf(output_file, "goto IF_END%d\n", serial_no);
+  fprintf(output_file, "label IF_FALSE%d\n", serial_no);
+}
+void VM_stop_if(int serial_no) {
+  if (!is_init) return;
+  fprintf(output_file, "label IF_END%d\n", serial_no);
 }

@@ -113,15 +113,24 @@ Symbol *AppendSymbol(Symbol symbol) {
   // Get the number of this kind of symbol.
   symbol.num = count[symbol.kind]++;
 
+  symbol.num_locals = symbol.num_args = symbol.num_fields = 0;
+
   if (symbol.kind == FIELD) {
-        LookupSymbol(symbol.parent)->num_fields = count[FIELD];
+    LookupSymbol(symbol.parent)->num_fields = count[FIELD];
   }
 
   if (symbol.kind == VAR) {
-    LookupSymbol(symbol.parent)->num_locals = count[VAR];
+    LookupSubroutine(symbol.parent, curr_class.context)->num_locals =
+        count[VAR];
   }
 
-  symbol.num_locals = symbol.num_fields = 0;
+  if (symbol.kind == ARG) {
+    LookupSubroutine(symbol.parent, curr_class.context)->num_args = count[ARG];
+  }
+
+  if (symbol.kind == METHOD) {
+    symbol.num_args = 1;
+  }
 
   // Now we can add the symbol to the table.
   int index = scope->size++;
@@ -201,16 +210,17 @@ void StartNewClass(char *name) {
   strcpy(curr_class.context, name);
 }
 
-void StartNewSubroutine(char *name) {
+void StartNewSubroutine(Symbol *subr) {
   // Reset the "subroutine" table in preparation for a new subroutine scope.
   // Instead of fully reallocating the table, we can just reset the "size"
   // parameter and overwrite everything in the table.
   curr_subroutine.size = 0;
 
   // Reset the count for all the internal subroutine variables.
-  count[ARG] = count[VAR] = 0;
+  count[VAR] = 0;
+  count[ARG] = subr->kind == METHOD ? 1 : 0;
 
-  strcpy(curr_subroutine.context, name);
+  strcpy(curr_subroutine.context, subr->identifier);
 }
 void SetPassMode(PassMode pass) { pass_mode = pass; }
 

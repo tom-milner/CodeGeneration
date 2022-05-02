@@ -29,7 +29,7 @@ int VM_init(char *filename) {
   int name_length = ext - filename;
   char vm_file_name[1024] = {0};
   strncpy(vm_file_name, filename, name_length);
-  strcat(vm_file_name, ".VM");
+  strcat(vm_file_name, ".vm");
 
   // Open the file.
   output_file = fopen(vm_file_name, "w");
@@ -86,6 +86,7 @@ void VM_start_function(Symbol *function) {
 }
 
 int VM_stop() {
+  if(!is_init) return 1;
   is_init = false;
   fclose(output_file);
   return 0;

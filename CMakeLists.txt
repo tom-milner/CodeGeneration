@@ -1,7 +1,8 @@
-cmake_minimum_required(VERSION 3.21)
+cmake_minimum_required(VERSION 2.8.12)
 project(Code_Generation_Self_Grader C)
 
-set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_C_STANDARD_REQUIRED TRUE)
 
 include_directories(.)
 
@@ -31,3 +32,6 @@ add_custom_target(test_programs_compiled
         )
 
 add_dependencies(Code_Generation_Self_Grader jack_lib test_programs test_programs_compiled)
+
+set_property(TARGET Code_Generation_Self_Grader PROPERTY C_STANDARD 99)
+
